@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { BrowserRouter as Router, Routes, Route, useParams, useNavigate, useLocation } from 'react-router-dom';
 import { io } from 'socket.io-client';
 import { FaCoffee, FaCopy, FaHome, FaShare } from 'react-icons/fa';
@@ -211,20 +211,24 @@ function JoinRoom() {
     fetchRoomData();
   }, [roomId]);
 
+  // Socket connection setup
   useEffect(() => {
     if (!roomState.joined || !roomState.name) return;
 
-    socketRef.current = io(config.socketUrl, {
-      query: { 
-        name: roomState.name,
-        isOwner: location.state?.isOwner || false,
-        ownerToken: localStorage.getItem(`room_owner_${roomId}`),
-        userId: roomState.userId
-      },
-      reconnection: true,
-      reconnectionAttempts: 5,
-      reconnectionDelay: 1000
-    });
+    // Create socket connection only once
+    if (!socketRef.current) {
+      socketRef.current = io(config.socketUrl, {
+        query: { 
+          name: roomState.name,
+          isOwner: location.state?.isOwner || false,
+          ownerToken: localStorage.getItem(`room_owner_${roomId}`),
+          userId: roomState.userId
+        },
+        reconnection: true,
+        reconnectionAttempts: 5,
+        reconnectionDelay: 1000
+      });
+    }
 
     // Join room and request initial participant list
     const joinAndSync = () => {
@@ -246,49 +250,54 @@ function JoinRoom() {
         socketRef.current.emit('request_participants', { roomId });
       }
     }, 5000);
-    
-    const handleParticipantsUpdate = (list) => {
-      console.log('Received participants update:', list);
-      
-      // Keep participants in original order from server
-      setRoomState(prev => ({ ...prev, participants: list }));
 
+    return () => {
+      clearInterval(syncInterval);
+    };
+  }, [roomState.joined, roomId, roomState.name, location.state?.isOwner, roomState.userId]);
+
+  // Event handlers with useCallback to prevent stale closures
+  const handleParticipantsUpdate = useCallback((list) => {
+    console.log('Received participants update:', list);
+    
+    // Keep participants in original order from server
+    setRoomState(prev => {
+      const newParticipants = list;
+      const oldParticipants = prev.participants;
+      
       // Check for new participants
-      if (list.length > roomState.participants.length) {
-        const newParticipants = list.filter(
-          newP => !roomState.participants.some(
+      if (newParticipants.length > oldParticipants.length) {
+        const newParticipantsList = newParticipants.filter(
+          newP => !oldParticipants.some(
             oldP => oldP.id === newP.id
           )
         );
         
-        if (newParticipants.length > 0) {
-          const lastNewParticipant = newParticipants[newParticipants.length - 1];
-          if (lastNewParticipant.id !== roomState.userId) {
+        if (newParticipantsList.length > 0) {
+          const lastNewParticipant = newParticipantsList[newParticipantsList.length - 1];
+          if (lastNewParticipant.id !== prev.userId) {
             setNotification(lastNewParticipant.name);
             setTimeout(() => setNotification(null), 3000);
           }
         }
       }
-    };
+      
+      return { ...prev, participants: newParticipants };
+    });
+  }, []);
 
-    const handleStartRoulette = () => {
-      if (roomState.participants.length < 2) {
-        setRoomState(prev => ({
+  const handleStartRoulette = useCallback(() => {
+    setRoomState(prev => {
+      if (prev.participants.length < 2) {
+        return {
           ...prev,
           rouletteError: 'En az 2 katılımcı gerekli'
-        }));
-        return;
+        };
       }
       
       // Reset states
-      setRoomState(prev => ({ 
-        ...prev, 
-        displayedWinner: null,
-        rouletteError: ''
-      }));
-      
-      setRouletteState(prev => ({ 
-        ...prev, 
+      setRouletteState(roulettePrev => ({ 
+        ...roulettePrev, 
         isSpinning: true,
         mustSpin: false,
         showConfetti: false
@@ -298,43 +307,76 @@ function JoinRoom() {
         roomId,
         ownerToken: localStorage.getItem(`room_owner_${roomId}`)
       });
-    };
+      
+      return { 
+        ...prev, 
+        displayedWinner: null,
+        rouletteError: ''
+      };
+    });
+  }, [roomId]);
 
-    const handleRouletteResult = (winner) => {
-      // Find winner by ID instead of name
-      const winnerIndex = roomState.participants.findIndex(p => p.id === winner.id);
+  const handleRouletteResult = useCallback((winner) => {
+    // Find winner by ID instead of name
+    setRoomState(prev => {
+      const winnerIndex = prev.participants.findIndex(p => p.id === winner.id);
       console.log('Winner selection:', {
         receivedWinner: winner,
         foundIndex: winnerIndex,
-        allParticipants: roomState.participants
+        allParticipants: prev.participants
       });
       
       if (winnerIndex !== -1) {
-        setRouletteState(prev => ({
-          ...prev,
+        setRouletteState(roulettePrev => ({
+          ...roulettePrev,
           prizeNumber: winnerIndex,
           mustSpin: true,
           isSpinning: true,
           showConfetti: false
         }));
       }
-    };
+      
+      return prev;
+    });
+  }, []);
 
-    const handleReconnect = () => {
-      joinAndSync();
-    };
+  const handleReconnect = useCallback(() => {
+    socketRef.current.emit('join_room', { 
+      roomId, 
+      name: roomState.name,
+      isOwner: location.state?.isOwner || false,
+      ownerToken: localStorage.getItem(`room_owner_${roomId}`),
+      userId: roomState.userId
+    });
+    socketRef.current.emit('request_participants', { roomId });
+  }, [roomId, roomState.name, location.state?.isOwner, roomState.userId]);
 
-    const handleRoomExpired = (data) => {
-      // Only set expired state if we're not the owner or if the roulette has actually started
-      if (!location.state?.isOwner || data.rouletteStarted) {
-        setRoomState(prev => ({ ...prev, expired: true }));
-      }
-    };
+  const handleRoomExpired = useCallback((data) => {
+    // Only set expired state if we're not the owner or if the roulette has actually started
+    if (!location.state?.isOwner || data.rouletteStarted) {
+      setRoomState(prev => ({ ...prev, expired: true }));
+    }
+  }, [location.state?.isOwner]);
 
+  // Event listeners setup - re-run when handlers change
+  useEffect(() => {
+    if (!socketRef.current) return;
+
+    // Remove existing listeners
+    socketRef.current.off('participants_update');
+    socketRef.current.off('joined');
+    socketRef.current.off('connect');
+    socketRef.current.off('reconnect');
+    socketRef.current.off('join_error');
+    socketRef.current.off('roulette_result');
+    socketRef.current.off('room_expired');
+    socketRef.current.off('roulette_error');
+    socketRef.current.off('roulette_start');
+
+    // Add event listeners
     socketRef.current.on('participants_update', handleParticipantsUpdate);
     socketRef.current.on('joined', () => {
       setRoomState(prev => ({ ...prev, joined: true }));
-      joinAndSync();
     });
     socketRef.current.on('connect', handleReconnect);
     socketRef.current.on('reconnect', handleReconnect);
@@ -354,20 +396,31 @@ function JoinRoom() {
       }));
     });
 
+    // Cleanup function
     return () => {
-      clearInterval(syncInterval);
-      socketRef.current?.off('participants_update');
-      socketRef.current?.off('joined');
-      socketRef.current?.off('connect');
-      socketRef.current?.off('reconnect');
-      socketRef.current?.off('join_error');
-      socketRef.current?.off('roulette_result');
-      socketRef.current?.off('room_expired');
-      socketRef.current?.off('roulette_error');
-      socketRef.current?.off('roulette_start');
-      socketRef.current?.disconnect();
+      if (socketRef.current) {
+        socketRef.current.off('participants_update');
+        socketRef.current.off('joined');
+        socketRef.current.off('connect');
+        socketRef.current.off('reconnect');
+        socketRef.current.off('join_error');
+        socketRef.current.off('roulette_result');
+        socketRef.current.off('room_expired');
+        socketRef.current.off('roulette_error');
+        socketRef.current.off('roulette_start');
+      }
     };
-  }, [roomState.joined, roomId, roomState.name, location.state]);
+  }, [handleParticipantsUpdate, handleStartRoulette, handleRouletteResult, handleReconnect, handleRoomExpired]);
+
+  // Cleanup socket connection when component unmounts
+  useEffect(() => {
+    return () => {
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+        socketRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (roomState.winner) {
@@ -480,38 +533,7 @@ function JoinRoom() {
     }
   };
 
-  const handleStartRoulette = () => {
-    if (roomState.participants.length < 2) {
-      setRoomState(prev => ({
-        ...prev,
-        rouletteError: 'En az 2 katılımcı gerekli'
-      }));
-      return;
-    }
-    
-    // Reset states
-    setRoomState(prev => ({ 
-      ...prev, 
-      displayedWinner: null,
-      rouletteError: ''
-    }));
-    
-    // Get the owner token from location state or localStorage
-    const ownerToken = location.state?.ownerToken || localStorage.getItem(`room_owner_${roomId}`);
-    
-    // Emit the start event
-    if (socketRef.current?.connected) {
-      socketRef.current.emit('start_roulette', { 
-        roomId,
-        ownerToken
-      });
-    } else {
-      setRoomState(prev => ({
-        ...prev,
-        rouletteError: 'Sunucu bağlantısı koptu. Lütfen sayfayı yenileyin.'
-      }));
-    }
-  };
+
 
   const handleFinishRoulette = () => {
     navigate('/');

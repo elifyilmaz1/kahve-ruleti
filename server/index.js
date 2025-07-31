@@ -312,8 +312,8 @@ setInterval(() => {
     if (now - rooms[roomId].createdAt > 24 * 60 * 60 * 1000) {
       delete rooms[roomId];
       console.log(`Room ${roomId} cleaned up due to age`);
-    }
-  }
+    } 
+  }2
 }, 60 * 60 * 1000); // Check every hour
 
 const PORT = process.env.PORT || 5000;

@@ -113,6 +113,7 @@ button {
   flex-direction: column;
   justify-content: center;
   position: relative;
+  min-height: 100px;
 }
 
 .roulette-container {
@@ -126,15 +127,19 @@ button {
 .winner-announcement {
   background: var(--primary);
   color: var(--text);
-  padding: var(--spacing-sm);
+  bottom: 1rem; 
+  top: 100%;
+  padding: var(--spacing-xs);
   border-radius: var(--border-radius);
   margin: var(--spacing-xs) 0;
   text-align: center;
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-sm);
+  margin: 2rem  ;
+  gap: var(--spacing-xs);
   animation: fadeIn 0.5s ease-out;
 }
+
 
 .winner-text {
   font-size: 16px;
@@ -320,6 +325,12 @@ button {
   font-size: 13px;
   text-align: center;
   margin: var(--spacing-xs) 0;
+}
+.winner-placeholder {
+  min-height: 90px; /* winner-announcement yüksekliğine göre ayarlanabilir */
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 @media (max-width: 480px) {

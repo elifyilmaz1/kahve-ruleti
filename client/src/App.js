@@ -1,12 +1,12 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { BrowserRouter as Router, Routes, Route, useParams, useNavigate, useLocation } from 'react-router-dom';
-import { io } from 'socket.io-client';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import Confetti from 'react-confetti';
+import { Wheel } from 'react-custom-roulette';
 import { FaCoffee, FaCopy, FaHome, FaShare } from 'react-icons/fa';
 import { GiCoffeeBeans, GiCoffeeCup } from 'react-icons/gi';
-import { Wheel } from 'react-custom-roulette';
-import Confetti from 'react-confetti';
-import config from './config';
+import { Route, BrowserRouter as Router, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { io } from 'socket.io-client';
 import './App.css';
+import config from './config';
 
 // Viewport height calculation
 const setViewportHeight = () => {
@@ -127,7 +127,8 @@ function JoinRoom() {
     displayedWinner: null,
     copied: false,
     newParticipant: null,
-    userId: null
+    userId: null,
+    rouletteWinner: null // <-- yeni eklenen alan
   });
 
   // Bildirim için ayrı bir state ve ref
@@ -145,6 +146,14 @@ function JoinRoom() {
     width: window.innerWidth,
     height: window.innerHeight
   });
+
+  const isSpinningRef = useRef(false);
+  const [spinParticipants, setSpinParticipants] = useState([]);
+  const [wheelWinnerIndex, setWheelWinnerIndex] = useState(0);
+
+  // State
+  const [mustSpin, setMustSpin] = useState(false);
+  const [prizeNumber, setPrizeNumber] = useState(0);
 
   // Hooks
   const { roomId } = useParams();
@@ -286,59 +295,37 @@ function JoinRoom() {
     });
   }, []);
 
+  // handleStartRoulette fonksiyonu:
   const handleStartRoulette = useCallback(() => {
-    setRoomState(prev => {
-      if (prev.participants.length < 2) {
-        return {
-          ...prev,
-          rouletteError: 'En az 2 katılımcı gerekli'
-        };
-      }
-      
-      // Reset states
-      setRouletteState(roulettePrev => ({ 
-        ...roulettePrev, 
-        isSpinning: true,
-        mustSpin: false,
-        showConfetti: false
-      }));
-      
-      socketRef.current?.emit('start_roulette', { 
-        roomId,
-        ownerToken: localStorage.getItem(`room_owner_${roomId}`)
-      });
-      
-      return { 
-        ...prev, 
-        displayedWinner: null,
-        rouletteError: ''
-      };
+    if (isSpinningRef.current) return;
+    isSpinningRef.current = true;
+    setSpinParticipants(roomState.participants); // spin sırasında sabit liste
+    socketRef.current?.emit('start_roulette', { 
+      roomId,
+      ownerToken: localStorage.getItem(`room_owner_${roomId}`)
     });
-  }, [roomId]);
+    setRoomState(prev => ({
+      ...prev,
+      displayedWinner: null,
+      rouletteError: ''
+    }));
+  }, [roomId, roomState.participants]);
 
+  // roulette_result event handler'ı:
   const handleRouletteResult = useCallback((winner) => {
-    // Find winner by ID instead of name
-    setRoomState(prev => {
-      const winnerIndex = prev.participants.findIndex(p => p.id === winner.id);
-      console.log('Winner selection:', {
-        receivedWinner: winner,
-        foundIndex: winnerIndex,
-        allParticipants: prev.participants
-      });
-      
-      if (winnerIndex !== -1) {
-        setRouletteState(roulettePrev => ({
-          ...roulettePrev,
-          prizeNumber: winnerIndex,
-          mustSpin: true,
-          isSpinning: true,
-          showConfetti: false
-        }));
+    setRoomState(prev => ({
+      ...prev,
+      rouletteWinner: winner,
+      displayedWinner: {
+        id: winner.id,
+        name: winner.name
       }
-      
-      return prev;
-    });
-  }, []);
+    }));
+    const winnerList = spinParticipants.length > 0 ? spinParticipants : roomState.participants;
+    const winnerIndex = winnerList.findIndex(p => p.id === winner.id);
+    setPrizeNumber(winnerIndex);
+    setMustSpin(true);
+  }, [spinParticipants, roomState.participants]);
 
   const handleReconnect = useCallback(() => {
     socketRef.current.emit('join_room', { 
@@ -392,7 +379,7 @@ function JoinRoom() {
         ...prev, 
         isSpinning: true,
         mustSpin: true,
-        prizeNumber: 0  // Başlangıç pozisyonu
+        prizeNumber: 0 // Başlangıç pozisyonu
       }));
     });
 
@@ -561,15 +548,15 @@ function JoinRoom() {
   );
 
   const renderWinner = () => {
-    if (!roomState.displayedWinner || rouletteState.isSpinning) return null;
-    const isWinnerHost = roomState.displayedWinner.name.includes('👑');
+    const winnerObj = roomState.rouletteWinner;
+    if (!winnerObj || rouletteState.isSpinning) return null;
+    const ownerObj = roomState.participants.find(p => p.name === roomState.roomOwner);
+    const isWinnerHost = ownerObj && winnerObj.id === ownerObj.id;
     return (
-      <div className="winner-announcement">
+      <div className="winner-announcement " >
         <p className="winner-text">
-          {isWinnerHost ? 
-            `${roomState.displayedWinner.name}` : 
-            roomState.displayedWinner.name.toUpperCase()
-          } kahve yapmakla görevlendirildi! ☕
+          {winnerObj.name.toUpperCase()}
+          {isWinnerHost && ' 👑'} kahve yapmakla görevlendirildi! ☕
         </p>
         <button onClick={handleFinishRoulette} className="home-button">
           <FaHome /> Ana Sayfaya Dön
@@ -637,11 +624,13 @@ function JoinRoom() {
               <div className="roulette-container">
                 {roomState.participants.length > 0 && (
                   <Wheel
-                    mustStartSpinning={rouletteState.mustSpin}
-                    prizeNumber={rouletteState.prizeNumber}
-                    data={roomState.participants.map((p, index) => ({
-                      id: p.id, // Add ID to wheel data
-                      option: p.name === roomState.roomOwner ? `${p.name.toUpperCase()} 👑` : p.name.toUpperCase(),
+                    mustStartSpinning={mustSpin}
+                    prizeNumber={prizeNumber}
+                    data={(spinParticipants.length > 0 ? spinParticipants : roomState.participants).map((p) => ({
+                      id: p.id,
+                      option: p.id === (spinParticipants.length > 0 ? spinParticipants : roomState.participants).find(x => x.name === roomState.roomOwner)?.id
+                        ? `${p.name.toUpperCase()} 👑`
+                        : p.name.toUpperCase(),
                       style: { backgroundColor: '#6F4E37', textColor: '#F5E6D3' }
                     }))}
                     backgroundColors={wheelColors}
@@ -656,9 +645,10 @@ function JoinRoom() {
                     radiusLineWidth={1}
                     perpendicularText={true}
                     spinDuration={0.8}
-                    startingOptionIndex={0}
                     rotationOffset={-2}
-                    disableInitialAnimation={true}
+                    startingOptionIndex={mustSpin ? wheelWinnerIndex : undefined} 
+                    disableInitialAnimation={!mustSpin}               
+                    recycle={false}
                     dimensions={windowSize.width <= 768 ? 200 : 300}
                     pointerProps={{
                       src: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTEyIDJMNCAyMGwyMC0xMC0xMC0yeiIgZmlsbD0iI0Q0QTU3NCIvPjwvc3ZnPg==",
@@ -671,19 +661,15 @@ function JoinRoom() {
                         isSpinning: false,
                         showConfetti: true
                       }));
+                      setMustSpin(false);
                       setTimeout(() => {
-                        const winner = roomState.participants[rouletteState.prizeNumber];
-                        console.log('Final winner:', {
-                          winner,
-                          prizeNumber: rouletteState.prizeNumber,
-                          allParticipants: roomState.participants
-                        });
+                        const winnerList = spinParticipants.length > 0 ? spinParticipants : roomState.participants;
+                        const winner = winnerList[prizeNumber];
                         setRoomState(prev => ({
                           ...prev,
                           displayedWinner: {
-                            name: winner.name === roomState.roomOwner ? 
-                              `${winner.name.toUpperCase()} 👑` : 
-                              winner.name.toUpperCase()
+                            id: winner.id,
+                            name: winner.name
                           }
                         }));
                       }, 500);

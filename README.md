@@ -1,2 +1,1 @@
-﻿# kahve-ruleti
-https://kahve-ruleti.elifyilmaz.net
+
